@@ -38,6 +38,7 @@ class LoadSourceType(str, Enum):
     JDBC = "jdbc"
     CUSTOM_DATASOURCE = "custom_datasource"
     KAFKA = "kafka"
+    REST_API = "rest_api"
 
 
 class TransformType(str, Enum):

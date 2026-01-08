@@ -54,6 +54,19 @@ class ConfigFieldValidator:
                 "options",
                 "readMode",
             },
+            "rest_api": {
+                "type",
+                "endpoint",
+                "method",
+                "headers",
+                "body",
+                "authentication",
+                "pagination",
+                "options",
+                "schema",
+                "exclusion_list",
+                "readMode",
+            },
         }
 
         # Transform type field definitions

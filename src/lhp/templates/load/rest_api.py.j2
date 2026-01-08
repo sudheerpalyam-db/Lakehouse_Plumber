@@ -1,0 +1,176 @@
+{# REST API Load Template - Shared Cluster Compatible #}
+{# Uses direct requests + DataFrame creation (works on shared clusters) #}
+
+{# Helper function to flatten nested JSON objects #}
+def _flatten_nested_fields_{{ action_name }}(record: dict) -> dict:
+    """Convert nested dicts/lists to JSON strings for Spark compatibility."""
+    flattened = {}
+    for key, value in record.items():
+        if isinstance(value, (dict, list)):
+            flattened[key] = json.dumps(value)
+        else:
+            flattened[key] = value
+    return flattened
+
+def _fetch_api_data_{{ action_name }}(url: str, method: str = "GET", headers: dict = None,
+                                       body: dict = None, timeout: int = {{ timeout }}) -> list:
+    """Fetch data from REST API endpoint."""
+    try:
+        if method.upper() == "GET":
+            response = requests.get(url, headers=headers or {}, timeout=timeout)
+        elif method.upper() == "POST":
+            response = requests.post(url, headers=headers or {}, json=body or {}, timeout=timeout)
+        else:
+            raise ValueError(f"Unsupported HTTP method: {method}")
+
+        response.raise_for_status()
+        data = response.json()
+        records = data if isinstance(data, list) else [data]
+
+        {% if flatten_nested %}
+        # Flatten nested objects to JSON strings
+        records = [_flatten_nested_fields_{{ action_name }}(r) for r in records]
+        {% endif %}
+
+        {% if exclusion_list %}
+        # Remove excluded columns (sensitive data)
+        exclusion_list = {{ exclusion_list }}
+        records = [{k: v for k, v in r.items() if k not in exclusion_list} for r in records]
+        {% endif %}
+
+        return records
+    except Exception as e:
+        print(f"Error fetching from {url}: {e}")
+        return []
+
+{% if pagination %}
+def _fetch_paginated_{{ action_name }}(base_url: str, headers: dict = None, timeout: int = {{ timeout }}) -> list:
+    """Fetch all pages of data from paginated API."""
+    all_records = []
+    {% if pagination.type == "offset" %}
+    offset = 0
+    page_size = {{ pagination.page_size | default(100) }}
+    limit_param = "{{ pagination.limit_param | default('limit') }}"
+    offset_param = "{{ pagination.offset_param | default('offset') }}"
+
+    while True:
+        url = f"{base_url}?{limit_param}={page_size}&{offset_param}={offset}"
+        records = _fetch_api_data_{{ action_name }}(url, "GET", headers, None, timeout)
+        if not records:
+            break
+        all_records.extend(records)
+        if len(records) < page_size:
+            break
+        offset += page_size
+    {% elif pagination.type == "page" %}
+    page = 1
+    page_size = {{ pagination.page_size | default(100) }}
+    page_param = "{{ pagination.page_param | default('page') }}"
+    limit_param = "{{ pagination.limit_param | default('limit') }}"
+    max_pages = {{ pagination.max_pages | default(100) }}
+
+    while page <= max_pages:
+        url = f"{base_url}?{page_param}={page}&{limit_param}={page_size}"
+        records = _fetch_api_data_{{ action_name }}(url, "GET", headers, None, timeout)
+        if not records:
+            break
+        all_records.extend(records)
+        if len(records) < page_size:
+            break
+        page += 1
+    {% elif pagination.type == "cursor" %}
+    cursor = None
+    page_size = {{ pagination.page_size | default(100) }}
+    cursor_param = "{{ pagination.cursor_param | default('cursor') }}"
+    limit_param = "{{ pagination.limit_param | default('limit') }}"
+
+    while True:
+        if cursor:
+            url = f"{base_url}?{limit_param}={page_size}&{cursor_param}={cursor}"
+        else:
+            url = f"{base_url}?{limit_param}={page_size}"
+
+        response = requests.get(url, headers=headers or {}, timeout=timeout)
+        response.raise_for_status()
+        data = response.json()
+
+        records = data.get("{{ pagination.data_field | default('data') }}", [])
+        if isinstance(records, list):
+            {% if flatten_nested %}
+            records = [_flatten_nested_fields_{{ action_name }}(r) for r in records]
+            {% endif %}
+            all_records.extend(records)
+
+        cursor = data.get("{{ pagination.next_cursor_field | default('next_cursor') }}")
+        if not cursor or not records:
+            break
+    {% endif %}
+
+    return all_records
+{% endif %}
+
+@dp.temporary_view()
+def {{ target_view }}():
+    """{{ description }}"""
+
+    # API Configuration
+    endpoint = "{{ endpoint }}"
+    method = "{{ method }}"
+    headers = {{ headers | tojson if headers else '{}' }}
+    {% if body %}
+    body = {{ body | tojson }}
+    {% else %}
+    body = None
+    {% endif %}
+
+    {% if authentication %}
+    # Authentication
+    {% if authentication.type == "bearer" %}
+    headers["Authorization"] = f"Bearer {{ authentication.token }}"
+    {% elif authentication.type == "api_key" %}
+    headers["{{ authentication.header_name | default('X-API-Key') }}"] = "{{ authentication.api_key }}"
+    {% elif authentication.type == "databricks_secret" %}
+    secret_value = dbutils.secrets.get(scope="{{ authentication.secret_scope }}", key="{{ authentication.secret_key }}")
+    headers["{{ authentication.header_name | default('Authorization') }}"] = f"{{ authentication.prefix | default('Bearer') }} {secret_value}"
+    {% elif authentication.type == "basic" %}
+    import base64
+    credentials = base64.b64encode(f"{{ authentication.username }}:{{ authentication.password }}".encode()).decode()
+    headers["Authorization"] = f"Basic {credentials}"
+    {% endif %}
+    {% endif %}
+
+    # Fetch data from API
+    {% if pagination %}
+    records = _fetch_paginated_{{ action_name }}(endpoint, headers)
+    {% else %}
+    records = _fetch_api_data_{{ action_name }}(endpoint, method, headers, body)
+    {% endif %}
+
+    if not records:
+        # Return empty DataFrame with schema if no data
+        {% if schema %}
+        return spark.createDataFrame([], "{{ schema }}")
+        {% else %}
+        from pyspark.sql.types import StructType
+        return spark.createDataFrame([], StructType([]))
+        {% endif %}
+
+    # Create DataFrame from API response
+    {% if schema %}
+    df = spark.createDataFrame(records, "{{ schema }}")
+    {% else %}
+    df = spark.createDataFrame(records)
+    {% endif %}
+
+    {% if add_operational_metadata %}
+    # Add operational metadata columns
+    {% for col_name, expression in metadata_columns.items()|sort %}
+    df = df.withColumn('{{ col_name }}', {{ expression }})
+    {% endfor %}
+    {% endif %}
+
+    # Add source tracking columns
+    df = df.withColumn('_api_source_url', F.lit(endpoint))
+    df = df.withColumn('_api_fetch_timestamp', F.current_timestamp())
+
+    return df

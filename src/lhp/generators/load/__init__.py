@@ -7,6 +7,7 @@ from .jdbc import JDBCLoadGenerator
 from .python import PythonLoadGenerator
 from .custom_datasource import CustomDataSourceLoadGenerator
 from .kafka import KafkaLoadGenerator
+from .rest_api import RestApiLoadGenerator
 
 __all__ = [
     "CloudFilesLoadGenerator",
@@ -16,4 +17,5 @@ __all__ = [
     "PythonLoadGenerator",
     "CustomDataSourceLoadGenerator",
     "KafkaLoadGenerator",
+    "RestApiLoadGenerator",
 ]

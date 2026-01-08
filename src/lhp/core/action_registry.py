@@ -14,6 +14,7 @@ from ..generators.load import (
     PythonLoadGenerator,
     CustomDataSourceLoadGenerator,
     KafkaLoadGenerator,
+    RestApiLoadGenerator,
 )
 from ..generators.transform import (
     SQLTransformGenerator,
@@ -56,6 +57,7 @@ class ActionRegistry:
             LoadSourceType.PYTHON: PythonLoadGenerator,
             LoadSourceType.CUSTOM_DATASOURCE: CustomDataSourceLoadGenerator,
             LoadSourceType.KAFKA: KafkaLoadGenerator,
+            LoadSourceType.REST_API: RestApiLoadGenerator,
         }
 
         # Transform generators
